@@ -110,8 +110,7 @@ export async function install() {
   }
   
   // Add NVIDIA Helm repo
-  await $`helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update`;
-  await $`helm repo update`;
+  await utils.helm.ensureRepo("nvidia", "https://helm.ngc.nvidia.com/nvidia");
 
   // Create namespace
   await $`kubectl apply -f ${path.join(DIR, "namespace.yaml")}`;

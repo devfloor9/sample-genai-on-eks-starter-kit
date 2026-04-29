@@ -1,5 +1,6 @@
 {
   "demo": {
+    "parallelism": 4,
     "components": [
       { "category": "llm-model", "component": "vllm" },
       { "category": "o11y", "component": "langfuse" },
@@ -15,6 +16,7 @@
   },
   "llm-model": {
     "vllm": {
+      "prewarmOnInstall": true,
       "models": [
         { "name": "qwen3-30b-instruct-fp8", "deploy": true },
         { "name": "qwen3-30b-thinking-fp8", "deploy": false },
@@ -145,9 +147,10 @@
     "arch": "arm64"
   },
   "terraform": {
+    "parallelism": 20,
     "vars": {
       "efs_throughput_mode": "bursting",
-      "enable_ecr_pull_through_cache": false,
+      "enable_ecr_pull_through_cache": true,
       "dockerhub_username": "",
       "dockerhub_access_token": "",
       "github_username": "",

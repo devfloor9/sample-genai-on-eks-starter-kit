@@ -31,7 +31,7 @@ export async function install() {
     DOMAIN,
   };
   utils.renderTemplate(valuesTemplatePath, valuesRenderedPath, valuesVars);
-  await $`helm repo add kong https://charts.konghq.com`;
+  await utils.helm.ensureRepo("kong", "https://charts.konghq.com");
   await $`helm upgrade --install kong kong/kong --namespace kong --create-namespace -f ${valuesRenderedPath}`;
 
   const kongTemplatePath = path.join(DIR, "kong.template.yaml");

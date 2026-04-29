@@ -10,6 +10,92 @@ let config;
 let configLocalPath;
 let COMPONENTS_DIR;
 
+// Concurrency primitive — Promise-based semaphore.
+// Preserves order-of-arrival queueing. No external deps.
+const concurrentMap = async (items, limit, fn) => {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+};
+
+// Prefixed logger — wraps each line of stdout/stderr with [name] for parallel-install readability.
+const logger = (function () {
+  const withPrefix = (name) => {
+    const prefix = `[${name}] `;
+    const write = (stream, chunk) => {
+      const text = chunk.toString();
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length - 1; i++) {
+        stream.write(prefix + lines[i] + "\n");
+      }
+      if (lines[lines.length - 1].length > 0) {
+        stream.write(prefix + lines[lines.length - 1]);
+      }
+    };
+    return {
+      log: (msg) => process.stdout.write(prefix + msg + "\n"),
+      warn: (msg) => process.stderr.write(prefix + "⚠️  " + msg + "\n"),
+      error: (msg) => process.stderr.write(prefix + "❌ " + msg + "\n"),
+      write,
+    };
+  };
+  return { withPrefix };
+})();
+
+// Helm repo management — dedupes concurrent `helm repo add`, serializes file writes,
+// and batches a single `helm repo update` after all adds settle.
+const helm = (function () {
+  const addCache = new Map(); // name -> Promise<void>
+  let addChain = Promise.resolve(); // mutex across file writes
+  let updatePending = null;
+  let updateTimer = null;
+
+  const scheduleUpdate = () => {
+    if (updatePending) return updatePending;
+    updatePending = new Promise((resolve, reject) => {
+      updateTimer = setTimeout(async () => {
+        try {
+          await $`helm repo update`;
+          resolve();
+        } catch (err) {
+          reject(err);
+        } finally {
+          updatePending = null;
+          updateTimer = null;
+        }
+      }, 300);
+    });
+    return updatePending;
+  };
+
+  const ensureRepo = async (name, url) => {
+    if (!addCache.has(name)) {
+      const added = (addChain = addChain.then(async () => {
+        try {
+          // `helm repo add` is idempotent with --force-update; fall back on exit code
+          await $`helm repo add ${name} ${url} --force-update`.quiet();
+        } catch (err) {
+          addCache.delete(name); // allow retry
+          throw err;
+        }
+      }));
+      addCache.set(name, added);
+    }
+    await addCache.get(name);
+    await scheduleUpdate();
+  };
+
+  return { ensureRepo };
+})();
+
 // Check if running in K8s mode (non-EKS)
 const isK8sMode = () => {
   return process.env.PLATFORM === "k8s";
@@ -95,7 +181,12 @@ const renderTemplate = (templatePath, renderedPath, vars) => {
   fs.writeFileSync(renderedPath, template(vars));
 };
 
-// ECR Pull Through Cache 
+// ECR Pull Through Cache
+// When enabled, rewrites Docker Hub / GHCR image references to the private ECR
+// pull-through endpoint in the current region. Degrades gracefully when the
+// matching upstream credential is missing — returns the direct-registry prefix
+// and emits a one-shot warning, so installs keep working.
+let _missingCredWarned = { dockerhub: false, github: false };
 const getImagePrefixes = async () => {
   // K8s mode: use public registries directly
   if (isK8sMode()) {
@@ -104,18 +195,36 @@ const getImagePrefixes = async () => {
       GHCR_IMAGE_PREFIX: "ghcr.io/",
     };
   }
-  
+
   // EKS mode: use ECR Pull Through Cache if enabled
-  const enabled = config?.terraform?.vars?.enable_ecr_pull_through_cache;
-  const { REGION } = process.env;
+  const enabled = !!config?.terraform?.vars?.enable_ecr_pull_through_cache;
+  const { REGION, DOCKERHUB_USERNAME, DOCKERHUB_ACCESS_TOKEN, GITHUB_USERNAME, GITHUB_TOKEN } = process.env;
+
+  const hasDockerhubCreds = !!(DOCKERHUB_USERNAME && DOCKERHUB_ACCESS_TOKEN);
+  const hasGithubCreds = !!(GITHUB_USERNAME && GITHUB_TOKEN);
+
+  if (enabled && !hasDockerhubCreds && !_missingCredWarned.dockerhub) {
+    console.warn(
+      "⚠️  enable_ecr_pull_through_cache=true but DOCKERHUB_USERNAME / DOCKERHUB_ACCESS_TOKEN are empty — falling back to direct Docker Hub pulls for this run. Set both in .env to benefit from the cache (see README).",
+    );
+    _missingCredWarned.dockerhub = true;
+  }
+  if (enabled && !hasGithubCreds && !_missingCredWarned.github) {
+    console.warn(
+      "⚠️  enable_ecr_pull_through_cache=true but GITHUB_USERNAME / GITHUB_TOKEN are empty — falling back to direct ghcr.io pulls for this run.",
+    );
+    _missingCredWarned.github = true;
+  }
+
   const awsAccountId = await getAwsAccountId();
-  const ecrBase = enabled ? `${awsAccountId}.dkr.ecr.${REGION}.amazonaws.com` : "";
+  const ecrActive = enabled && !!awsAccountId;
+  const ecrBase = ecrActive ? `${awsAccountId}.dkr.ecr.${REGION}.amazonaws.com` : "";
 
   return {
-    // Docker Hub: empty when disabled, ECR prefix when enabled
-    DOCKER_IMAGE_PREFIX: enabled ? `${ecrBase}/docker-hub/` : "",
-    // GHCR: ghcr.io/ when disabled, ECR prefix when enabled
-    GHCR_IMAGE_PREFIX: enabled ? `${ecrBase}/github/` : "ghcr.io/",
+    // Docker Hub: use ECR pull-through only when fully configured
+    DOCKER_IMAGE_PREFIX: ecrActive && hasDockerhubCreds ? `${ecrBase}/docker-hub/` : "",
+    // GHCR: use ECR pull-through only when fully configured, else direct
+    GHCR_IMAGE_PREFIX: ecrActive && hasGithubCreds ? `${ecrBase}/github/` : "ghcr.io/",
   };
 };
 
@@ -283,9 +392,13 @@ const terraform = (function () {
       return;
     }
     const { REGION } = process.env;
+    // -parallelism controls per-resource concurrency within a single terraform
+    // apply (default 10). Bumping to 20 shaves EKS/VPC/IAM heavy graphs without
+    // hitting AWS API throttling in practice.
+    const parallelism = options.parallelism ?? config?.terraform?.parallelism ?? 20;
     try {
       await setupWorkspace(TERRAFORM_DIR, options);
-      await $`terraform apply --var-file="workspaces/${REGION}/terraform.tfvars" --auto-approve`;
+      await $`terraform apply --var-file="workspaces/${REGION}/terraform.tfvars" --parallelism=${parallelism} --auto-approve`;
     } catch (error) {
       throw new Error(error);
     }
@@ -470,4 +583,7 @@ export default {
   terraform,
   openwebui,
   cleanupStandardModeResources,
+  concurrentMap,
+  helm,
+  logger,
 };

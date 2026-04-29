@@ -37,7 +37,7 @@ export async function install() {
     AWS_REGION: process.env.AWS_REGION,
   };
   fs.writeFileSync(valuesRenderedPath, valuesTemplate(valuesVars));
-  await $`helm repo add community-charts https://community-charts.github.io/helm-charts`;
+  await utils.helm.ensureRepo("community-charts", "https://community-charts.github.io/helm-charts");
   await $`helm upgrade --install mlflow community-charts/mlflow --namespace mlflow --create-namespace -f ${valuesRenderedPath}`;
 }
 

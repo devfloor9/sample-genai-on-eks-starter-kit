@@ -124,8 +124,7 @@ export async function install() {
   
   // Step 1: Add Helm repo
   console.log("\n[1/4] Adding prometheus-community Helm repo...");
-  await $`helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update`;
-  await $`helm repo update`;
+  await utils.helm.ensureRepo("prometheus-community", "https://prometheus-community.github.io/helm-charts");
   
   // Step 2: Render values template
   console.log("\n[2/4] Preparing values...");

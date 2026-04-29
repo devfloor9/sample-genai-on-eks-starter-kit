@@ -22,8 +22,7 @@ export async function install() {
   const requiredEnvVars = ["QDRANT_USERNAME", "QDRANT_PASSWORD"];
   utils.checkRequiredEnvVars(requiredEnvVars);
 
-  await $`helm repo add qdrant https://qdrant.to/helm`;
-  await $`helm repo update`;
+  await utils.helm.ensureRepo("qdrant", "https://qdrant.to/helm");
 
   const valuesTemplatePath = path.join(DIR, "values.template.yaml");
   const valuesRenderedPath = path.join(DIR, "values.rendered.yaml");

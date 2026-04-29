@@ -22,8 +22,7 @@ export async function install() {
   // const requiredEnvVars = [];
   // utils.checkRequiredEnvVars(requiredEnvVars);
 
-  await $`helm repo add chroma https://amikos-tech.github.io/chromadb-chart`;
-  await $`helm repo update`;
+  await utils.helm.ensureRepo("chroma", "https://amikos-tech.github.io/chromadb-chart");
 
   const valuesTemplatePath = path.join(DIR, "values.template.yaml");
   const valuesRenderedPath = path.join(DIR, "values.rendered.yaml");

@@ -4,78 +4,93 @@
       "dir": "nvidia-platform",
       "name": "NVIDIA Platform",
       "components": [
-        { "dir": "gpu-operator", "name": "GPU Operator" },
-        { "dir": "monitoring", "name": "Monitoring (Prometheus + Grafana)" },
-        { "dir": "dynamo-platform", "name": "Dynamo Platform" },
-        { "dir": "dynamo-vllm", "name": "Dynamo vLLM Serving" },
-        { "dir": "benchmark", "name": "AIPerf Benchmark" },
-        { "dir": "aiconfigurator", "name": "AIConfigurator (Auto Config + SLA Deploy)" }
+        { "dir": "gpu-operator", "name": "GPU Operator", "stage": 3 },
+        { "dir": "monitoring", "name": "Monitoring (Prometheus + Grafana)", "stage": 3 },
+        { "dir": "dynamo-platform", "name": "Dynamo Platform", "stage": 3 },
+        { "dir": "dynamo-vllm", "name": "Dynamo vLLM Serving", "stage": 4, "dependsOn": ["nvidia-platform/dynamo-platform"] },
+        { "dir": "benchmark", "name": "AIPerf Benchmark", "stage": 4, "dependsOn": ["nvidia-platform/dynamo-vllm"] },
+        { "dir": "aiconfigurator", "name": "AIConfigurator (Auto Config + SLA Deploy)", "stage": 4, "dependsOn": ["nvidia-platform/dynamo-platform"] }
       ]
     },
     {
       "dir": "ai-gateway",
       "name": "AI Gateway",
       "components": [
-        { "dir": "litellm", "name": "LiteLLM" },
-        { "dir": "kong", "name": "Kong" }
+        { "dir": "litellm", "name": "LiteLLM", "stage": 4, "dependsOn": ["o11y/langfuse", "llm-model/vllm"] },
+        { "dir": "kong", "name": "Kong", "stage": 4 }
       ]
     },
     {
       "dir": "llm-model",
       "name": "LLM Model",
       "components": [
-        { "dir": "vllm", "name": "vLLM" },
-        { "dir": "sglang", "name": "SGLang" },
-        { "dir": "tgi", "name": "TGI" },
-        { "dir": "ollama", "name": "Ollama" }
+        { "dir": "vllm", "name": "vLLM", "stage": 3 },
+        { "dir": "sglang", "name": "SGLang", "stage": 3 },
+        { "dir": "tgi", "name": "TGI", "stage": 3 },
+        { "dir": "ollama", "name": "Ollama", "stage": 3 }
       ]
     },
     {
       "dir": "embedding-model",
       "name": "Embedding Model",
-      "components": [{ "dir": "tei", "name": "Text Embedding Inference (TEI)" }]
+      "components": [{ "dir": "tei", "name": "Text Embedding Inference (TEI)", "stage": 3 }]
     },
-    { "dir": "guardrail", "name": "Guardrail", "components": [{ "dir": "guardrails-ai", "name": "Guardrails AI" }] },
+    { "dir": "guardrail", "name": "Guardrail", "components": [{ "dir": "guardrails-ai", "name": "Guardrails AI", "stage": 3 }] },
     {
       "dir": "o11y",
       "name": "Observability",
       "components": [
-        { "dir": "langfuse", "name": "Langfuse" },
-        { "dir": "mlflow", "name": "MLflow" },
-        { "dir": "phoenix", "name": "Phoenix" }
+        { "dir": "langfuse", "name": "Langfuse", "stage": 3 },
+        { "dir": "mlflow", "name": "MLflow", "stage": 3 },
+        { "dir": "phoenix", "name": "Phoenix", "stage": 3 }
       ]
     },
-    { "dir": "gui-app", "name": "GUI App", "components": [{ "dir": "openwebui", "name": "Open WebUI" }] },
+    {
+      "dir": "gui-app",
+      "name": "GUI App",
+      "components": [{ "dir": "openwebui", "name": "Open WebUI", "stage": 5, "dependsOn": ["ai-gateway/litellm"] }]
+    },
     {
       "dir": "vector-database",
       "name": "Vector Database",
       "components": [
-        { "dir": "qdrant", "name": "Qdrant" },
-        { "dir": "chroma", "name": "Chroma" },
-        { "dir": "milvus", "name": "Milvus" }
+        { "dir": "qdrant", "name": "Qdrant", "stage": 3 },
+        { "dir": "chroma", "name": "Chroma", "stage": 3 },
+        { "dir": "milvus", "name": "Milvus", "stage": 3 }
       ]
     },
-    { "dir": "workflow-automation", "name": "Workflow Automation", "components": [{ "dir": "n8n", "name": "n8n" }] },
-    { "dir": "ai-agent", "name": "AI Agent", "components": [{ "dir": "openclaw", "name": "OpenClaw" }] }
+    { "dir": "workflow-automation", "name": "Workflow Automation", "components": [{ "dir": "n8n", "name": "n8n", "stage": 3 }] },
+    {
+      "dir": "ai-agent",
+      "name": "AI Agent",
+      "components": [{ "dir": "openclaw", "name": "OpenClaw", "stage": 5, "dependsOn": ["ai-gateway/litellm", "o11y/langfuse"] }]
+    }
   ],
   "exampleCategories": [
-    { "dir": "mcp-server", "name": "MCP Server", "examples": [{ "dir": "calculator", "name": "Calculator" }] },
+    { "dir": "mcp-server", "name": "MCP Server", "examples": [{ "dir": "calculator", "name": "Calculator", "stage": 6 }] },
     {
       "dir": "strands-agents",
       "name": "Strands Agents",
-      "examples": [{ "dir": "calculator-agent", "name": "Calculator Agent" }]
+      "examples": [
+        {
+          "dir": "calculator-agent",
+          "name": "Calculator Agent",
+          "stage": 6,
+          "dependsOn": ["gui-app/openwebui", "o11y/langfuse"]
+        }
+      ]
     },
     {
       "dir": "agno",
       "name": "Agno",
-      "examples": [{ "dir": "calculator-agent", "name": "Calculator Agent" }]
+      "examples": [{ "dir": "calculator-agent", "name": "Calculator Agent", "stage": 6 }]
     },
     {
       "dir": "openclaw",
       "name": "OpenClaw",
       "examples": [
-        { "dir": "doc-writer", "name": "Document Writer Agent" },
-        { "dir": "devops-agent", "name": "DevOps Agent" }
+        { "dir": "doc-writer", "name": "Document Writer Agent", "stage": 6, "dependsOn": ["ai-agent/openclaw"] },
+        { "dir": "devops-agent", "name": "DevOps Agent", "stage": 6, "dependsOn": ["ai-agent/openclaw"] }
       ]
     }
   ]

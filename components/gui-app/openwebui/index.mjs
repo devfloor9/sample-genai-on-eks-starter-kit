@@ -25,8 +25,7 @@ export async function install() {
   const requiredEnvVars = ["LITELLM_API_KEY", "OPENWEBUI_ADMIN_EMAIL", "OPENWEBUI_ADMIN_PASSWORD"];
   utils.checkRequiredEnvVars(requiredEnvVars);
 
-  await $`helm repo add open-webui https://open-webui.github.io/helm-charts`;
-  await $`helm repo update`;
+  await utils.helm.ensureRepo("open-webui", "https://open-webui.github.io/helm-charts");
 
   const valuesTemplatePath = path.join(DIR, "values.template.yaml");
   const valuesRenderedPath = path.join(DIR, "values.rendered.yaml");
