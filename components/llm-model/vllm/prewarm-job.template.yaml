@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vllm-prewarm-{{JOB_SUFFIX}}
+  namespace: vllm
+  labels:
+    app.kubernetes.io/component: vllm-prewarm
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: vllm-prewarm
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prewarm
+          image: {{GHCR_IMAGE_PREFIX}}astral-sh/uv:python3.11-bookworm-slim
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - NET_RAW
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "1"
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+              uv pip install --system --quiet 'huggingface_hub[hf_transfer]==0.26.2' hf_transfer==0.1.8
+              echo "== Starting HuggingFace snapshot prewarm =="
+              MODELS='{{MODELS_JSON}}'
+              echo "$MODELS" | python - <<'PY'
+              import json, os, sys
+              from huggingface_hub import snapshot_download
+              models = json.loads(os.environ.get("MODELS") or sys.stdin.read())
+              if not models:
+                  print("No models to prewarm.")
+                  sys.exit(0)
+              for m in models:
+                  print(f"-- prefetching {m} --", flush=True)
+                  snapshot_download(
+                      repo_id=m,
+                      allow_patterns=[
+                          "*.safetensors",
+                          "*.json",
+                          "*.txt",
+                          "tokenizer*",
+                          "*.model",
+                      ],
+                      cache_dir="/root/.cache/huggingface/hub",
+                      max_workers=8,
+                  )
+                  print(f"-- done {m} --", flush=True)
+              PY
+          volumeMounts:
+            - name: huggingface-cache
+              mountPath: /root/.cache/huggingface
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+      volumes:
+        - name: huggingface-cache
+          persistentVolumeClaim:
+            claimName: huggingface-cache

@@ -62,12 +62,15 @@ To quickly set up a demo environment with infrastructure and essential component
 
 ```bash
 ./cli demo-setup
+# Optional flags:
+# ./cli --parallelism 6 demo-setup   # override install concurrency (default: 4)
+# ./cli --sequential   demo-setup    # force legacy serial behavior
 ```
 
 This command will:
 
 1. Set up the required infrastructure using Terraform (check [Infrastructure Setup](docs/INFRA_SETUP.md) for more information)
-2. Deploy the demo components and examples specified in the config.json file in the right order
+2. Deploy the demo components and examples declared in `config.json` using a **stage-based parallel installer** — components that share a stage are installed concurrently (up to `--parallelism`), and declared `dependsOn` relationships in `cli-menu.json` keep ordering correct (e.g. `openwebui` waits for `litellm`, `strands-agents/calculator-agent` waits for `openwebui`).
 
 Check [Demo Walkthrough](docs/DEMO_WALKTHROUGH.md) on how to setup and use the demo
 
@@ -89,9 +92,33 @@ This command will:
 1. Present you with a list of available components and examples organized by category
 2. Allow you to select which components and examples you want to install
 3. Set up the required infrastructure using Terraform
-4. Install all the selected components and examples
+4. Install all the selected components and examples using the same stage-aware parallel installer as `demo-setup`, honoring `dependsOn` across whatever you selected.
 
-Note. Unlike the quick demo setup, the selected components and examples may not be deployed in the required order. Some components/examples might need to be refreshed by running the CLI install command again.
+The `--parallelism <n>` and `--sequential` flags work here too.
+
+### Speeding up `demo-setup`
+
+`demo-setup` is tuned for throughput out of the box. Knobs you can pull for additional gains:
+
+- **ECR pull-through cache** (on by default). Populate Docker Hub and GHCR credentials in `.env` to benefit:
+
+  ```bash
+  # .env
+  DOCKERHUB_USERNAME=your-docker-hub-user
+  DOCKERHUB_ACCESS_TOKEN=dckr_pat_...
+  GITHUB_USERNAME=your-github-user
+  GITHUB_TOKEN=ghp_...
+  ```
+
+  Credentials are threaded to `terraform/ecr-pull-through-cache.tf` automatically. When they are empty the CLI warns once and falls back to direct registry pulls — installs still work, just without the cache. GPU nodes on EKS Auto Mode already benefit from SOCI parallel-pull; this caching primarily helps CPU nodes and repeated workshop runs.
+- **vLLM HuggingFace pre-warm Job**. The vLLM install automatically dispatches a `vllm-prewarm-*` Job that prefetches model weights into the shared EFS PVC in parallel with pod boot. Disable with `"prewarmOnInstall": false` under `llm-model.vllm` in `config.local.json`, or re-run on demand:
+
+  ```bash
+  ./cli llm-model vllm prewarm
+  # follow progress:
+  kubectl -n vllm logs -l app.kubernetes.io/component=vllm-prewarm -f
+  ```
+- **Terraform parallelism**. Set `terraform.parallelism` in `config.local.json` (default 20) — bumps per-resource concurrency inside a single `terraform apply`.
 
 ## NVIDIA Dynamo Platform Setup
 
