@@ -146,6 +146,8 @@ export async function install() {
     ENABLE_INGRESS: enableIngress,
     INGRESS_CLASS: ingressClass,
     INGRESS_HOST: ingressHost,
+    // Used to build the Tempo→Langfuse trace deep link in the Grafana datasource.
+    DOMAIN: process.env.DOMAIN,
   };
   
   fs.writeFileSync(valuesRenderedPath, valuesTemplate(valuesVars));
@@ -186,6 +188,18 @@ export async function install() {
     console.log("  Benchmark dashboard metrics push will not work.");
   }
   
+  // Step 3.6: Expose Grafana on the shared internet-facing ALB when a DOMAIN
+  // is configured (EKS only) — grafana.<DOMAIN>, external-dns creates the record.
+  if (!isK8s && process.env.DOMAIN) {
+    console.log("\n[3.6/4] Exposing Grafana on the shared ALB...");
+    const ingressTemplatePath = path.join(DIR, "grafana-ingress.template.yaml");
+    const ingressRenderedPath = path.join(DIR, "grafana-ingress.rendered.yaml");
+    const ingressTemplate = handlebars.compile(fs.readFileSync(ingressTemplatePath, "utf8"));
+    fs.writeFileSync(ingressRenderedPath, ingressTemplate({ DOMAIN: process.env.DOMAIN }));
+    await $`kubectl apply -f ${ingressRenderedPath}`;
+    console.log(`  Grafana: https://grafana.${process.env.DOMAIN}/grafana`);
+  }
+
   // Step 4: Apply Grafana dashboards (Dynamo, DCGM, KVBM)
   console.log("\n[4/4] Applying Grafana dashboards...");
   await applyGrafanaDashboards();
@@ -219,6 +233,7 @@ async function applyGrafanaDashboards() {
     { file: "dcgm-metrics.json", name: "grafana-dcgm-dashboard", label: "DCGM GPU Monitoring" },
     { file: "kvbm.json", name: "grafana-kvbm-dashboard", label: "KVBM KV Cache" },
     { file: "benchmark-dashboard.json", name: "grafana-benchmark-dashboard", label: "Benchmark Pareto" },
+    { file: "agentic-traffic-overview.json", name: "grafana-agentic-traffic-dashboard", label: "Agentic Traffic Overview (eBPF + Langfuse)" },
   ];
   
   for (const dashboard of dashboards) {
@@ -296,10 +311,13 @@ async function printStatus() {
 
 export async function uninstall() {
   console.log("\nUninstalling Monitoring Stack...");
-  
+
+  // Remove the shared-ALB Grafana ingress (no-op if it was never created)
+  await $`kubectl delete ingress grafana-alb -n ${MONITORING_NAMESPACE} --ignore-not-found`.catch(() => {});
+
   // Remove dashboard ConfigMaps
   try {
-    const dashboardCMs = ["grafana-dynamo-dashboard", "grafana-dcgm-dashboard", "grafana-kvbm-dashboard", "grafana-benchmark-dashboard"];
+    const dashboardCMs = ["grafana-dynamo-dashboard", "grafana-dcgm-dashboard", "grafana-kvbm-dashboard", "grafana-benchmark-dashboard", "grafana-agentic-traffic-dashboard"];
     for (const cm of dashboardCMs) {
       await $`kubectl delete configmap ${cm} -n ${MONITORING_NAMESPACE} --ignore-not-found`.quiet();
     }

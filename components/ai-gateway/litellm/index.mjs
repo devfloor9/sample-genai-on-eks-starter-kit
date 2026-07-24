@@ -101,6 +101,14 @@ export async function install() {
     integration.o11y.phoenix = true;
     callbacks.push("arize_phoenix");
   }
+  // If Tempo is present, emit LiteLLM spans via the OTLP endpoint so the
+  // gateway hop shares the same trace_id as the Beyla eBPF spans and the
+  // Langfuse LLM observation (W3C traceparent is propagated end to end).
+  result = await $`kubectl get pod -n tempo -l app.kubernetes.io/name=tempo --ignore-not-found`;
+  if (result.stdout.includes("tempo")) {
+    integration.o11y.tempo = true;
+    callbacks.push("otel");
+  }
   integration.o11y.config = {
     callbacks: JSON.stringify(callbacks),
     success_callback: JSON.stringify(successCallback),

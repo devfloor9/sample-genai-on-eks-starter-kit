@@ -17,6 +17,9 @@ prometheus:
     serviceMonitorNamespaceSelector: {}
     # Allow Probes from any namespace
     probeNamespaceSelector: {}
+    # Accept remote_write pushes (Tempo metrics-generator writes service-graph
+    # and span/RED metrics here for the unified traffic dashboard).
+    enableRemoteWriteReceiver: true
     # Retention
     retention: {{{RETENTION}}}
     # Storage
@@ -57,6 +60,33 @@ grafana:
   enabled: true
   adminUser: admin
   adminPassword: "{{{GRAFANA_ADMIN_PASSWORD}}}"
+
+  # Register Tempo as a trace datasource for the unified traffic dashboard.
+  # - serviceMap wires Tempo's service-graph metrics (in Prometheus) into the
+  #   node-graph service map.
+  # - tracesToLogsV2 / the derived data link jumps from a span to Langfuse using
+  #   the shared trace_id (Beyla propagates the W3C traceparent, so the eBPF span
+  #   and the Langfuse LLM observation carry the same trace id).
+  additionalDataSources:
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      access: proxy
+      # tempo-distributed serves the query-frontend HTTP API on 3200 (the
+      # single-binary Tempo default of 3100 does NOT apply to this chart).
+      url: http://tempo-query-frontend.tempo.svc.cluster.local:3200
+      jsonData:
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true
+{{#if DOMAIN}}
+        # Deep-link a trace to its Langfuse view. Langfuse trace URLs are keyed
+        # by trace id; ${__trace.traceId} is substituted by Grafana.
+        tracesToLogsV2:
+          datasourceUid: prometheus
+        externalUrl: "https://langfuse.{{{DOMAIN}}}"
+{{/if}}
 
 {{#if ENABLE_INGRESS}}
   grafana.ini:

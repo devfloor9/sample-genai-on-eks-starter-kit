@@ -3,6 +3,9 @@
     "components": [
       { "category": "llm-model", "component": "vllm" },
       { "category": "o11y", "component": "langfuse" },
+      { "category": "o11y", "component": "tempo" },
+      { "category": "o11y", "component": "beyla" },
+      { "category": "o11y", "component": "network-observability" },
       { "category": "gui-app", "component": "openwebui" },
       { "category": "vector-database", "component": "qdrant" },
       { "category": "embedding-model", "component": "tei" },
@@ -19,6 +22,7 @@
         { "name": "qwen3-30b-instruct-fp8", "deploy": true },
         { "name": "qwen3-30b-thinking-fp8", "deploy": false },
         { "name": "qwen3-32b-fp8", "deploy": true },
+        { "name": "glm-52-fp8", "deploy": true },
         { "name": "qwen3-next-80b-instruct", "deploy": false },
         { "name": "qwen3-next-80b-instruct-fp8", "deploy": false },
         { "name": "qwen3-next-80b-thinking", "deploy": false },
@@ -94,6 +98,11 @@
   "litellm": {
     "enableBedrockGuardrail": false,
     "enableGuardrailsAI": false
+  },
+  "o11y": {
+    "beyla": {
+      "otelTracesEndpoint": "http://tempo-distributor.tempo.svc.cluster.local:4318"
+    }
   },
   "ai-agent": {
     "openclaw": {

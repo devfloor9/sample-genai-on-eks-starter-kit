@@ -1,0 +1,88 @@
+# Grafana Beyla — eBPF auto-instrumentation (DaemonSet)
+#
+# Produces OpenTelemetry trace spans + RED metrics for HTTP/gRPC traffic across
+# the agentic platform (agent → LiteLLM → vLLM/Dynamo) WITHOUT any application
+# code change. Traces go to Tempo (OTLP); RED + service-graph metrics are
+# scraped by kube-prometheus-stack via a ServiceMonitor.
+#
+# The glue that unifies this with Langfuse is the W3C traceparent: Beyla injects
+# and reads it, so a single request shares one trace_id across the eBPF spans and
+# the Langfuse LLM observation.
+
+# "application" preset instruments app-level HTTP/gRPC (RED + traces). It does
+# NOT require hostNetwork, so cluster-service DNS (Tempo/Prometheus) keeps working.
+# NOTE: the "network" preset would need hostNetwork; we intentionally avoid it —
+# the L3/L4 network map is delivered by the AWS NFM component instead.
+preset: application
+
+# Enable trace generation and propagation.
+config:
+  data:
+    # Instrument the agentic request path. Empty selectors here would instrument
+    # everything; we scope to the platform namespaces to keep overhead low.
+    discovery:
+      instrument:
+        - k8s_namespace: litellm
+        - k8s_namespace: vllm
+        - k8s_namespace: dynamo
+        - k8s_namespace: dynamo-system
+        - k8s_namespace: mcp-server
+        - k8s_namespace: agent
+    attributes:
+      kubernetes:
+        enable: true
+      # Emit W3C traceparent so trace context is continuous across services and
+      # matches the trace_id Langfuse records. "all" = HTTP headers + IP-option
+      # encoding (needed for the HTTPS/TLS hops, where Beyla must be on both
+      # ends — satisfied because Beyla runs as a DaemonSet on every node).
+      select:
+        beyla_network_flow_bytes:
+          include:
+            - k8s.src.owner.name
+            - k8s.dst.owner.name
+    # RED metrics + service graph + span metrics. application_service_graph
+    # powers the L7 nodeGraph panel; application_span feeds per-route TTFT.
+    features:
+      - application
+      - application_service_graph
+      - application_span
+    # Distributed trace context propagation across all protocols.
+    ebpf:
+      track_request_headers: true
+    otel_traces_export:
+      endpoint: {{{OTEL_TRACES_ENDPOINT}}}
+    # Prometheus scrape endpoint for RED / service-graph metrics.
+    prometheus_export:
+      port: 9090
+      path: /metrics
+      features:
+        - application
+        - application_service_graph
+        - application_span
+
+# Context propagation mode. "all" enables HTTP-header + IP-option propagation so
+# TLS-encrypted hops stay correlated. Under the AWS VPC CNI (+ kube-proxy) this
+# default TC-based capture is fine. IF Cilium is ever adopted, Beyla's TC hooks
+# would clash with Cilium's — switch network capture to socket_filter then.
+env:
+  BEYLA_BPF_TRACK_REQUEST_HEADERS: "true"
+  BEYLA_BPF_CONTEXT_PROPAGATION: "all"
+
+# Expose the Prometheus endpoint to kube-prometheus-stack. In chart 1.16.10
+# (app v3.25.0) the ServiceMonitor targets the Service, and its scrape port is
+# derived from `config.data.prometheus_export.port` (9090) above — so the
+# Service MUST be enabled too, or NEITHER object is rendered. (This is the
+# schema change from chart 1.5.0, where serviceMonitor.enabled alone sufficed.)
+service:
+  enabled: true
+  # port/targetPort default to the prometheus_export.port (9090); keep explicit
+  # for clarity.
+  port: 9090
+  portName: metrics
+
+# The stack already accepts ServiceMonitors from any namespace
+# (serviceMonitorSelectorNilUsesHelmValues: false), so this is auto-discovered.
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: prometheus

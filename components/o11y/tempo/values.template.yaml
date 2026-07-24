@@ -1,0 +1,61 @@
+# Grafana Tempo (tempo-distributed) — trace store for the unified dashboard.
+#
+# Receives OTLP spans from Beyla, stores blocks in S3, and runs the
+# metrics-generator to emit service-graph + span (RED) metrics into the
+# kube-prometheus-stack Prometheus via remote_write. Grafana registers Tempo as
+# a datasource and uses trace_id data links to jump from a slow TTFT span to the
+# Langfuse LLM observation.
+
+# Single shared ServiceAccount so the Pod Identity association in main.tf grants
+# every Tempo component S3 access (no static keys).
+serviceAccount:
+  create: true
+  name: tempo
+
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: "{{TEMPO_BUCKET_NAME}}"
+      region: "{{AWS_REGION}}"
+      endpoint: "s3.{{AWS_REGION}}.amazonaws.com"
+      # access_key/secret_key intentionally omitted — credentials come from the
+      # EKS Pod Identity association (see main.tf).
+
+# OTLP receivers (Beyla exports OTLP/HTTP on 4318; gRPC 4317 kept for SDKs).
+traces:
+  otlp:
+    grpc:
+      enabled: true
+    http:
+      enabled: true
+
+# metrics-generator: turns spans into service-graph + span (RED) metrics and
+# remote-writes them to Prometheus so the dashboard's service map / TTFT panels
+# can query them alongside Beyla's own RED metrics.
+metricsGenerator:
+  enabled: true
+  config:
+    storage:
+      remote_write:
+        - url: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+          send_exemplars: true
+    processor:
+      span_metrics:
+        dimensions:
+          - service.name
+          - span.name
+          - http.method
+          - http.status_code
+      service_graphs:
+        dimensions:
+          - http.method
+          - http.status_code
+
+# Enable the generator processors for the (single) default tenant.
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs
+        - span-metrics

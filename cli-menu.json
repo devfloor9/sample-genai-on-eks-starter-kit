@@ -41,6 +41,9 @@
       "name": "Observability",
       "components": [
         { "dir": "langfuse", "name": "Langfuse" },
+        { "dir": "tempo", "name": "Tempo (trace store)" },
+        { "dir": "beyla", "name": "Beyla (eBPF auto-instrumentation)" },
+        { "dir": "network-observability", "name": "Network Flow Monitor (AWS)" },
         { "dir": "mlflow", "name": "MLflow" },
         { "dir": "phoenix", "name": "Phoenix" }
       ]

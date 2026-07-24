@@ -76,6 +76,12 @@ envVars:
   PHOENIX_COLLECTOR_ENDPOINT: http://phoenix-svc.phoenix:4317/v1/traces
   PHOENIX_COLLECTOR_HTTP_ENDPOINT: http://phoenix-svc.phoenix:6006/v1/traces
   {{/if}}
+  {{#if @root.integration.o11y.tempo}}
+  # Export gateway spans to Tempo via OTLP/HTTP so the LiteLLM hop joins the
+  # same trace_id as the Beyla eBPF spans and the Langfuse observation.
+  OTEL_EXPORTER: otlp_http
+  OTEL_ENDPOINT: http://tempo-distributor.tempo.svc.cluster.local:4318/v1/traces
+  {{/if}}
 
 ingress:
   enabled: true
