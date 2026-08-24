@@ -14,10 +14,6 @@ spec:
         app: loan-buddy-agent
     spec:
       serviceAccountName: loan-buddy-agent
-      {{#unless useBuildx}}
-      nodeSelector:
-        kubernetes.io/arch: {{{arch}}}
-      {{/unless}}
       containers:
         - name: agent
           image: {{{IMAGE}}}

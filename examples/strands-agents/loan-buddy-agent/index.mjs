@@ -8,9 +8,11 @@ import { $ } from "zx";
 $.verbose = true;
 
 // Loan Buddy (Strands) - Alternative Stack example.
-// Builds + pushes the agent image to its own ECR repo (created by main.tf),
-// then deploys it wired to: Kong /loan-strands -> Bedrock, the 3 MCP tool
-// servers, S3 (image storage via Pod Identity), and Arize AX tracing.
+// Pulls a PRE-BUILT MULTI-ARCH image from the shared public ECR registry
+// (public.ecr.aws/agentic-ai-platforms-on-k8s), then deploys it wired to:
+// Kong /loan-strands -> Bedrock, the 3 MCP tool servers, S3 (image storage via
+// Pod Identity), and Arize AX tracing. No per-participant build/push — matches
+// the calculator-agent / calculator examples.
 
 export const name = "Loan Buddy Agent (Strands, Kong+Arize)";
 const __filename = fileURLToPath(import.meta.url);
@@ -19,14 +21,20 @@ let BASE_DIR;
 let config;
 let utils;
 
+// Pre-built public ECR image (published multi-arch by the maintainers via
+// examples/build-ecr-images.sh — same pattern as calculator-agent / calculator).
+const ECR_REGISTRY_ALIAS = "agentic-ai-platforms-on-k8s";
+const IMAGE_NAME = "strands-agents-loan-buddy-agent";
+const IMAGE_URL = `public.ecr.aws/${ECR_REGISTRY_ALIAS}/${IMAGE_NAME}:latest`;
+
 export async function init(_BASE_DIR, _config, _utils) {
   BASE_DIR = _BASE_DIR;
   config = _config;
   utils = _utils;
 }
 
-// Verify the workshop-provisioned prerequisites exist BEFORE any expensive work
-// (terraform apply, multi-arch buildx, ECR push). If a prerequisite is missing,
+// Verify the workshop-provisioned prerequisites exist BEFORE any work
+// (terraform apply for S3 Pod Identity, then deploy). If a prerequisite is missing,
 // print clear guidance and exit(1) — a standalone starter-kit user should never
 // stumble into a broken half-deploy with no explanation.
 async function preflightOrExit() {
@@ -98,26 +106,13 @@ export async function install() {
   // second time causes "Attribute redefined" (region/name written twice).
   const REGION = process.env.REGION || process.env.AWS_REGION || "us-east-1";
 
-  // 1. Terraform: ECR repo + S3 Pod Identity for the agent SA. Idempotent — a
-  //    re-run reconciles existing resources (no-op if already present).
+  // 1. Terraform: S3 Pod Identity for the agent SA. No ECR repo — the agent runs
+  //    a pre-built multi-arch PUBLIC image (IMAGE_URL, pulled at deploy time), so
+  //    there is nothing to build or push here. Idempotent — a re-run reconciles
+  //    existing resources (no-op if already present).
   await utils.terraform.apply(DIR);
-  // utils.terraform.output expects the output name in options.outputName; with it,
-  // it returns the RAW string (terraform output -raw). Without it, it returns the
-  // full JSON object — so we must pass { outputName } to get a usable string.
-  const ecrUrl = await utils.terraform.output(DIR, { outputName: "ecr_repository_url" });
-  if (!ecrUrl || typeof ecrUrl !== "string") {
-    throw new Error("terraform did not return ecr_repository_url as a string — check the apply output above");
-  }
 
-  // 2. Build + push a MULTI-ARCH image (amd64 + arm64) so the pod runs on any node.
-  //    The v2 cluster has mixed-arch nodes (Graviton arm64 + x86 amd64). A single-arch
-  //    image causes "no match for platform in manifest" -> ImagePullBackOff when the
-  //    pod lands on the other arch. buildx builds both and pushes a manifest list.
-  const registry = ecrUrl.substring(0, ecrUrl.indexOf("/"));
-  await $`aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${registry}`;
-  await $`docker buildx build --platform linux/amd64,linux/arm64 -t ${ecrUrl}:latest --push ${DIR}`;
-
-  // 3. Ensure namespace (idempotent).
+  // 2. Ensure namespace (idempotent).
   await $`kubectl create namespace strands-agents --dry-run=client -o yaml | kubectl apply -f -`;
 
   // 4. Resolve the Kong proxy LoadBalancer hostname (the /loan-strands route).
@@ -171,12 +166,8 @@ export async function install() {
   const agentTemplate = handlebars.compile(fs.readFileSync(agentTemplatePath, "utf8"));
   const envCfg = config.examples["strands-agents"]["loan-buddy-agent"].env;
   const agentVars = {
-    // We build a MULTI-ARCH image, so the pod must NOT be pinned to one arch.
-    // The template renders the arch nodeSelector only under {{#unless useBuildx}},
-    // so useBuildx:true => no nodeSelector => schedules on amd64 OR arm64 nodes.
-    useBuildx: true,
-    arch: "multi",
-    IMAGE: `${ecrUrl}:latest`,
+    // Pre-built multi-arch public image → runs on any node arch, no nodeSelector needed.
+    IMAGE: IMAGE_URL,
     KONG_BASE_URL,
     KONG_API_KEY: process.env.LOAN_STRANDS_KONG_KEY || "loan-strands-key-123",
     KONG_MODEL_ID: envCfg.KONG_MODEL_ID || "openai/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
