@@ -53,15 +53,20 @@ immediately when you switch back. Arrow keys, Home and End move between tabs.
 
 ## Agents & collectors (header)
 
-Above the tabs sits a health strip for the telemetry pipeline itself: one chip
-per agent or collector the dashboard depends on, grouped as node agents
+Above the tabs sits a health strip for the telemetry pipeline itself. It is
+collapsed by default to one row — the heading, state counts (healthy / watch /
+degraded / critical / not installed) and chips for only the agents that need
+attention — so it takes no space when everything is green. Click the heading
+or "Show all" to expand it into one chip per agent or collector the dashboard
+depends on, grouped as node agents
 (node-exporter, Beyla eBPF, Network Flow Monitor agent, DCGM exporter,
 neuron-monitor, the GPU operator DaemonSets, EFS CSI), metrics (Prometheus,
 Prometheus Operator, kube-state-metrics, Grafana, Pushgateway, NFM exporter,
 metrics-server), traces (the Tempo components) and LLM tracing (Langfuse). Each
 chip shows ready/desired from kube-state-metrics; scrape health (`up` for the
 component's Prometheus job) and container restarts in the last hour can only
-lower the state, never raise it. Hover or focus a chip for the detail. The list
+lower the state, never raise it. Hover or focus a chip for the detail, or click
+it to pin the detail open (Escape or a click elsewhere closes it). The list
 is curated in `src/lib/agents.ts` — it is not a discovery, so a component that
 is not installed in a cluster shows as "Not installed" rather than an error;
 add or rename entries there to match your install (the workload names follow
