@@ -170,7 +170,7 @@ export const CACHE = {
  * and Neuron rows read on the same scale.
  */
 export const ENGINES = {
-  running: `max by (pod, model_name) (vllm:num_requests_running)`,
+  running: `max by (namespace, pod, model_name) (vllm:num_requests_running)`,
   waiting: `max by (pod, model_name) (vllm:num_requests_waiting)`,
   kvUsage: `max by (pod, model_name) (vllm:kv_cache_usage_perc)`,
   cacheHits: `sum by (pod, model_name) (rate(vllm:prefix_cache_hits_total[${RATE}]))`,
@@ -349,3 +349,80 @@ export const ACCELERATORS = {
 
 /** GPU utilisation (0..1) below this while GPUs are allocated = stranded accelerator; same bar as Neuron. */
 export const GPU_UTIL_IDLE = NEURON_UTIL_IDLE;
+
+/**
+ * Per-pod accelerator inventory for the GPU & Accelerators section, both
+ * families in one table. NVIDIA rows come straight from DCGM (one series per
+ * physical GPU, with the claiming pod on the `pod` label). Neuron rows are
+ * assembled from the scheduler's view — which pods requested NeuronCores and
+ * on which node — because neuron-monitor reports per node, not per pod.
+ */
+export const ACCEL_PODS = {
+  /** Pods that requested NeuronCores, with their node. */
+  neuronPodNode: `max by (namespace, pod, node) (kube_pod_info and on (namespace, pod) kube_pod_container_resource_requests{resource="aws_amazon_com_neuroncore"})`,
+  neuronPodCores: `sum by (namespace, pod) (kube_pod_container_resource_requests{resource="aws_amazon_com_neuroncore"})`,
+  neuronNodeUtil: `avg by (node) (neuroncore_utilization_ratio)`,
+  neuronNodeDeviceMemoryBytes: `sum by (node) (neuron_runtime_memory_used_bytes{memory_location="neuron_device"})`,
+  neuronNodeInstanceType: `group by (node, instance_type) (neuron_hardware_info)`,
+  /** vLLM engine → model pool; lets a pod (either family) be attributed to tenants. */
+  podModel: `group by (namespace, pod, model_name) (vllm:num_requests_running)`,
+  /** Tenants (LiteLLM team aliases) that have a virtual key routed to each model pool. */
+  tenantsByModel: `count by (team_alias, requested_model) (litellm_input_tokens_metric_total{${LITELLM_TENANT}})`,
+} as const;
+
+/** Primary NIC on the Bottlerocket nodes; the eni and veth devices are the pod side of the same bytes. */
+const NODE_NIC = `device="eth0"`;
+/** Whole NVMe devices; partitions (nvme0n1p1) would double count. */
+const NODE_DISK = `device=~"nvme[0-9]+n[0-9]+"`;
+/** Bottlerocket's data volume (images, kubelet, logs) — /var, /opt and /mnt are the same partition. */
+const NODE_DATA_FS = `mountpoint="/local", fstype="xfs"`;
+/** Requests only count while the pod is actually scheduled and running. */
+const RUNNING_PODS = `on (namespace, pod) group_left () (max by (namespace, pod) (kube_pod_status_phase{phase="Running"}) == 1)`;
+
+/**
+ * At a Glance — whole-cluster averages and ratios, one screen. Every query
+ * returns a single series suitable for a SignalTile range query.
+ */
+export const CLUSTER = {
+  /* Cluster */
+  nodesReady: `sum(kube_node_status_condition{condition="Ready", status="true"})`,
+  podsRunning: `sum(kube_pod_status_phase{phase="Running"})`,
+  podsPending: `sum(kube_pod_status_phase{phase="Pending"})`,
+  restartsPerHour: `sum(increase(kube_pod_container_status_restarts_total[1h]))`,
+
+  /* CPU — 0..1 */
+  cpuUtil: `1 - avg(rate(node_cpu_seconds_total{mode="idle"}[${RATE}]))`,
+  cpuRequestsRatio: `sum(kube_pod_container_resource_requests{resource="cpu"} * ${RUNNING_PODS}) / sum(kube_node_status_allocatable{resource="cpu"})`,
+  cpuBusiestNode: `max(1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[${RATE}])))`,
+  cpuThrottledShare: `sum(rate(container_cpu_cfs_throttled_periods_total[${RATE}])) / sum(rate(container_cpu_cfs_periods_total[${RATE}]))`,
+
+  /* Memory — 0..1 */
+  memUtil: `1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)`,
+  memRequestsRatio: `sum(kube_pod_container_resource_requests{resource="memory"} * ${RUNNING_PODS}) / sum(kube_node_status_allocatable{resource="memory"})`,
+  memBusiestNode: `max(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`,
+  oomKilledContainers: `sum(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"})`,
+
+  /* Network — bytes/s */
+  netReceiveBytes: `sum(rate(node_network_receive_bytes_total{${NODE_NIC}}[${RATE}]))`,
+  netTransmitBytes: `sum(rate(node_network_transmit_bytes_total{${NODE_NIC}}[${RATE}]))`,
+
+  /* Storage */
+  nodeDataFsUsed: `1 - sum(node_filesystem_avail_bytes{${NODE_DATA_FS}}) / sum(node_filesystem_size_bytes{${NODE_DATA_FS}})`,
+  pvUsed: `sum(kubelet_volume_stats_used_bytes) / sum(kubelet_volume_stats_capacity_bytes)`,
+  diskReadBytes: `sum(rate(node_disk_read_bytes_total{${NODE_DISK}}[${RATE}]))`,
+  diskWriteBytes: `sum(rate(node_disk_written_bytes_total{${NODE_DISK}}[${RATE}]))`,
+
+  /* Accelerators */
+  gpusAllocatedRatio: `count(DCGM_FI_DEV_GPU_UTIL{pod!=""}) / count(DCGM_FI_DEV_GPU_UTIL)`,
+  neuronCoresActiveRatio: `count(neuroncore_utilization_ratio) / sum(kube_node_status_capacity{resource="aws_amazon_com_neuroncore"})`,
+} as const;
+
+export const CLUSTER_THRESHOLDS = {
+  podsPending: { warning: 1, critical: 10 },
+  restartsPerHour: { warning: 5, critical: 30 },
+  utilisation: { warning: 0.7, critical: 0.9 },
+  requestsRatio: { warning: 0.8, critical: 0.95 },
+  throttledShare: { warning: 0.05, critical: 0.25 },
+  oomKilled: { warning: 1, critical: 5 },
+  fsUsed: { warning: 0.75, critical: 0.9 },
+} as const;

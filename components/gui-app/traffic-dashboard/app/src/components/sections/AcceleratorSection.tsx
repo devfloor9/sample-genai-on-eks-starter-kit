@@ -1,32 +1,54 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { AcceleratorFilterBar } from "../AcceleratorFilterBar";
 import { AcceleratorFleetTable, useAcceleratorFleet } from "../AcceleratorFleetTable";
+import { AcceleratorPodTable } from "../AcceleratorPodTable";
 import { Card } from "../Card";
+import { EnginesGrouping, EnginesGroupingToggle, EnginesTable } from "../EnginesTable";
 import { GpuSection } from "./GpuSection";
 import { NeuronSection } from "./NeuronSection";
 import { ACCELERATOR_KIND_LABEL, ACCELERATOR_UNIT, AcceleratorKind } from "@/lib/accelerator";
+import { AcceleratorFilter, EMPTY_FILTER } from "@/lib/acceleratorFilter";
+import { useAcceleratorPods } from "@/lib/acceleratorPods";
 import { formatShort } from "@/lib/format";
+import { useTenantsByModel } from "@/lib/tenants";
 
 const KINDS: AcceleratorKind[] = ["gpu", "neuron"];
 
 /**
- * One section for every accelerator in the cluster. The fleet table on top
- * puts NVIDIA GPUs and AWS Inferentia / Trainium on the same columns; the
- * segmented control picks which family's detail panels (DCGM or
- * neuron-monitor) render below. The default tab is the first family that is
+ * One section for every accelerator in the cluster. Top to bottom: the fleet
+ * table (NVIDIA and Neuron on the same columns), a filter bar, the serving
+ * signals per model pool / engine pod, every accelerator-holding pod, and then
+ * the per-family detail panels (DCGM or neuron-monitor) picked by the
+ * segmented control. The default detail tab is the first family that is
  * actually reporting, so a Neuron-only cluster does not open on an empty GPU
  * panel.
  */
 export function AcceleratorSection({ minutes }: { minutes: number }) {
   const fleet = useAcceleratorFleet();
+  const pods = useAcceleratorPods();
+  const tenants = useTenantsByModel();
   const [picked, setPicked] = useState<AcceleratorKind | null>(null);
+  const [grouping, setGrouping] = useState<EnginesGrouping>("model");
+  const [filter, setFilter] = useState<AcceleratorFilter>(EMPTY_FILTER);
 
   const devicesByKind = useMemo(() => {
     const totals: Record<AcceleratorKind, number> = { gpu: 0, neuron: 0 };
     for (const row of fleet.rows) totals[row.kind] += row.devicesActive;
     return totals;
   }, [fleet.rows]);
+
+  // Dropdown options come from the pods themselves, so the lists never offer a
+  // value that would filter everything away.
+  const filterOptions = useMemo(
+    () => ({
+      namespaces: [...new Set(pods.rows.map((r) => r.namespace))].sort(),
+      services: [...new Set(pods.rows.map((r) => r.service))].sort(),
+      tenants: tenants.all,
+    }),
+    [pods.rows, tenants.all],
+  );
 
   const fallback: AcceleratorKind = devicesByKind.gpu === 0 && devicesByKind.neuron > 0 ? "neuron" : "gpu";
   const selected = picked ?? fallback;
@@ -69,6 +91,23 @@ export function AcceleratorSection({ minutes }: { minutes: number }) {
         }
       >
         <AcceleratorFleetTable rows={fleet.rows} isLoading={fleet.isLoading} error={fleet.error} selected={selected} onSelect={setPicked} />
+      </Card>
+
+      <AcceleratorFilterBar value={filter} onChange={setFilter} options={filterOptions} />
+
+      <Card
+        title="Per model & per pod"
+        subtitle="The serving signals per model pool and per vLLM engine pod — accelerator utilisation and memory, KV cache, prefix hit, queue and throughput — so a fleet average never hides a pinned or idle engine. NVIDIA columns join DCGM on the pod; Neuron columns join neuron-monitor through the pod's node. Tenants are the LiteLLM teams routed to each pool."
+        action={<EnginesGroupingToggle value={grouping} onChange={setGrouping} />}
+      >
+        <EnginesTable grouping={grouping} filter={filter} />
+      </Card>
+
+      <Card
+        title="Per-pod accelerator usage"
+        subtitle="Every pod holding an accelerator, NVIDIA GPU or AWS Neuron, on the same columns. GPU rows are one per physical GPU with that GPU's own memory, power and temperature (DCGM). Neuron rows are one per pod with the cores it requested; utilisation and memory are the node's, marked * when other Neuron pods share the node. Sorted by utilization."
+      >
+        <AcceleratorPodTable filter={filter} />
       </Card>
 
       <div className="flex items-center gap-3 text-xs text-ink-muted">

@@ -37,7 +37,7 @@ failing — the dashboard is useful with a subset installed.
 | `AUTH_KEYCLOAK_ISSUER` | no | Defaults to `https://keycloak.{DOMAIN}/realms/genai` |
 | `PROMETHEUS_URL` | no | Defaults to the kube-prometheus-stack service; also settable via `config.json` |
 
-`install()` builds `linux/amd64` and `linux/arm64`, pushes to ECR (creating the repository if
+`install()` builds `linux/amd64`, pushes to ECR (creating the repository if
 absent), renders the manifests and applies them.
 
 ## Layout
@@ -53,30 +53,20 @@ immediately when you switch back. Arrow keys, Home and End move between tabs.
 
 ## At a Glance
 
-The first tab is the KCD 2026 Token Factory signal set on one screen, mirroring
-the "Token Factory — At a Glance (KCD LLM-native signals)" row of
-`token-factory-overview.json` (`GLANCE` in `src/lib/queries.ts`, thresholds in
-`GLANCE_THRESHOLDS` copied from the Grafana stat panels). Tiles are grouped by
-the talk's blocks — B1 routing & prefix cache (TTFT, hit ratio, cached prompt
-share, queue time), B2 token throughput & per-token latency (tok/s, TPOT, E2E),
-B3 GPU & KV cache (KV max, GPU util against the 70% target, framebuffer,
-preemptions), B4 scale signals (queue depth, in flight, models serving,
-abort/error) — followed by the network and L7 headlines. Each tile
+The first tab is a whole-cluster overview: seven blocks of four tiles each,
+one block per resource — nodes & pods, CPU, memory, network, storage, GPU &
+accelerators, serving (`CLUSTER` and `CLUSTER_THRESHOLDS` in
+`src/lib/queries.ts`, plus the fleet-wide `GLANCE`/`KPI` figures). Utilisation
+tiles are averages over nodes with a "busiest node" tile next to them, because
+an average hides a single saturated node; requested-vs-allocatable only counts
+pods in phase Running; network is the nodes' primary NIC (`eth0`), storage is
+the Bottlerocket data partition (`/local`) plus kubelet PVC stats. Each tile
 (`SignalTile.tsx`) runs one range query over the selected window: the headline
 is the latest point, the delta compares it with the window start, and the
 sparkline (`Sparkline.tsx`) shows the path; hovering the sparkline shows the
-value at that time in the caption.
-
-Below the tiles, the "Per model & per pod" table (`EnginesTable.tsx`, queries in
-`ENGINES`) breaks the same signals down per model pool and, toggled with
-"By pod", per vLLM engine pod: accelerator utilisation and memory, KV cache,
-prefix hit, running/waiting, generation tok/s and TTFT p95. Rows anchor on
-`vllm:num_requests_running` (every engine reports it, GPU or Neuron); NVIDIA
-columns join DCGM on the `pod` label, Neuron columns join neuron-monitor through
-the pod's node via `kube_pod_info`. Model rows aggregate with device-weighted
-utilisation, max KV usage, summed counters and the model's own TTFT histogram.
-Neuron engines show "—" for framebuffer, KV cache and prefix hit because those
-exporters do not report them.
+value at that time in the caption. The full KCD Token Factory signal set
+stays under LLM Performance and Cache Hit Rate; the per-model / per-pod
+breakdown is under GPU & Accelerators.
 
 ## Architecture notes
 
@@ -195,9 +185,42 @@ NVIDIA GPUs (DCGM exporter, keyed by `modelName`) and AWS Inferentia / Trainium
 instance family) on the same columns — nodes, devices reported vs. advertised,
 devices allocated to pods, average utilisation, memory and a *Serving /
 Allocated, idle / Unallocated* state — and a segmented control picks which
-family's detail panels render below. Neuron is a tab here rather than a section
-of its own because the question an operator asks first is "is the fleet busy",
-not "which vendor". The default tab is whichever family is actually reporting.
+family's detail panels render at the bottom. Neuron is a tab here rather than a
+section of its own because the question an operator asks first is "is the fleet
+busy", not "which vendor". The default tab is whichever family is actually
+reporting.
+
+Between the fleet table and the detail panels sit a filter bar and two tables
+that span both families:
+
+- **Filter bar** (`AcceleratorFilterBar.tsx`, `src/lib/acceleratorFilter.ts`)
+  — Accelerator (NVIDIA GPU / AWS Neuron), Namespace, Service and Tenant, one
+  selection driving both tables. Namespace and Service come from the pods
+  themselves (the service is the workload name derived from the pod name,
+  `src/lib/workload.ts`). Tenant is the LiteLLM team alias with a virtual key
+  routed to the pod's model pool (`src/lib/tenants.ts`,
+  `litellm_input_tokens_metric_total` by `team_alias, requested_model`), so a
+  tenant selection narrows to vLLM engines — a pod no gateway route points at
+  has no tenant.
+- **Per model & per pod** (`EnginesTable.tsx`, `ENGINES`) — the serving
+  signals per model pool and, toggled with "By pod", per vLLM engine pod:
+  accelerator utilisation and memory, KV cache, prefix hit, running/waiting,
+  generation tok/s, TTFT p95 and tenants. Rows anchor on
+  `vllm:num_requests_running` (every engine reports it, GPU or Neuron); NVIDIA
+  columns join DCGM on the `pod` label, Neuron columns join neuron-monitor
+  through the pod's node via `kube_pod_info`. Model rows aggregate the pods
+  that survive the filter: device-weighted utilisation, max KV usage, summed
+  counters and the model's own TTFT histogram. Neuron engines show "—" for
+  framebuffer, KV cache and prefix hit because those exporters do not report
+  them.
+- **Per-pod accelerator usage** (`AcceleratorPodTable.tsx`,
+  `src/lib/acceleratorPods.ts`, `ACCEL_PODS`) — every pod holding an
+  accelerator. GPU rows are one per physical GPU (DCGM, joined on `UUID` with
+  the `gpu` index as fallback) with that GPU's memory, power and temperature.
+  Neuron rows are one per pod that requested `aws.amazon.com/neuroncore`, with
+  the node's core utilisation and device memory; when several Neuron pods share
+  a node the figures are the node's and the row is marked `*`. Power and
+  temperature are "—" for Neuron because neuron-monitor does not report them.
 
 The Neuron tab (`NeuronSection`, `NEURON` in `queries.ts`) shows NeuronCore
 utilisation, device / host memory, execution latency and errors, plus a per-node
@@ -207,10 +230,9 @@ process, not per pod, so the model pod is joined through `kube_pod_info`.
 
 ### NVIDIA tab
 
-Metric names match the repo's `dcgm-metrics.json` Grafana dashboard. The
-per-pod table joins four instant vectors on the physical GPU identity
-(`UUID`, falling back to the `gpu` index), which is what lets a temperature be
-attributed to the pod scheduled on that device.
+Metric names match the repo's `dcgm-metrics.json` Grafana dashboard: fleet
+stat tiles, utilisation by pod and temperature per GPU over time (the per-pod
+table lives above the tabs, see "Per-pod accelerator usage").
 
 "GPU usage by service" derives a workload name from the pod name
 (`src/lib/workload.ts`) because DCGM labels pods, not owners. That is a

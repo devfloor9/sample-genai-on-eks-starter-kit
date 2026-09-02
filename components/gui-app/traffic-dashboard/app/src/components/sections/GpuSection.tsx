@@ -3,7 +3,6 @@
 import { Card } from "../Card";
 import { GpuByService } from "../GpuByService";
 import { GpuEmptyState } from "../GpuEmptyState";
-import { GpuPodTable } from "../GpuPodTable";
 import { StatTile, levelFor } from "../StatTile";
 import { TimeSeriesChart } from "../TimeSeriesChart";
 import { formatBytes, formatCelsius, formatPercent100, formatWatts } from "@/lib/format";
@@ -53,13 +52,6 @@ export function GpuSection({ minutes }: { minutes: number }) {
           error={power.error}
         />
       </div>
-
-      <Card
-        title="Per-pod GPU usage"
-        subtitle="One row per pod and physical GPU. The temperature column is the GPU that pod is scheduled on, joined from DCGM's UUID label. Sorted by utilization."
-      >
-        <GpuPodTable />
-      </Card>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Card

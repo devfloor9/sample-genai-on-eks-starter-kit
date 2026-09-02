@@ -10,10 +10,13 @@
 
 import { useMemo, useState } from "react";
 import { acceleratorLabel, isNeuronAccelerator, useAcceleratorsByNode } from "@/lib/accelerator";
+import { AcceleratorFilter, EMPTY_FILTER, isFiltering, matchesFilter } from "@/lib/acceleratorFilter";
 import { formatCount, formatPercentUnit, formatSeconds, formatShort } from "@/lib/format";
 import { ENGINES, GLANCE_THRESHOLDS as T } from "@/lib/queries";
 import { STATUS, STATUS_GLYPH, STATUS_LABEL, StatusLevel, colorForIndex } from "@/lib/theme";
+import { useTenantsByModel } from "@/lib/tenants";
 import { InstantRow, useInstantVector } from "@/lib/useSeries";
+import { workloadFromPod } from "@/lib/workload";
 import { levelFor } from "./StatTile";
 
 export type EnginesGrouping = "model" | "pod";
@@ -21,8 +24,13 @@ export type EnginesGrouping = "model" | "pod";
 interface EngineRow {
   key: string;
   model: string;
+  namespace: string;
   pod: string;
+  /** Workload name derived from the pod name — the "service" the filter bar offers. */
+  service: string;
   node: string | null;
+  /** LiteLLM team aliases with a key routed to this model pool. */
+  tenants: string[];
   accelerator: string | null;
   /** GPUs (DCGM) or Neuron cores (neuron-monitor) behind this engine. */
   devices: number | null;
@@ -39,21 +47,24 @@ interface EngineRow {
   ttftP95: number | null;
 }
 
-interface ModelRow extends Omit<EngineRow, "pod" | "node"> {
+interface ModelRow extends Omit<EngineRow, "pod" | "node" | "service"> {
   pods: number;
   accelerators: string[];
+  services: string[];
 }
 
 /**
- * The At a Glance tiles are fleet totals; this table is the same signals per
- * model pool and per engine pod, so a fleet average of 52% GPU util can be read
+ * The fleet table above is totals per accelerator family; this table is the
+ * serving signals per model pool and per engine pod, so a fleet average of 52% GPU util can be read
  * as "one pool pinned at 100%, one idle". Rows anchor on
  * vllm:num_requests_running (every engine reports it, GPU or Neuron); the
  * accelerator columns join DCGM on the pod label and neuron-monitor through the
  * pod's node. Model rows aggregate: device-weighted utilisation, summed memory
- * and counters, max KV usage, and the model's own TTFT histogram.
+ * and counters, max KV usage, and the model's own TTFT histogram. The filter
+ * applies to engine pods before grouping, so a model row under a tenant or
+ * namespace filter aggregates only the pods that matched.
  */
-export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
+export function EnginesTable({ grouping, filter = EMPTY_FILTER }: { grouping: EnginesGrouping; filter?: AcceleratorFilter }) {
   const running = useInstantVector(ENGINES.running);
   const waiting = useInstantVector(ENGINES.waiting);
   const kv = useInstantVector(ENGINES.kvUsage);
@@ -70,6 +81,7 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
   const neuronUtil = useInstantVector(ENGINES.neuronUtilByNode);
   const neuronCores = useInstantVector(ENGINES.neuronCoresByNode);
   const accelerators = useAcceleratorsByNode();
+  const tenants = useTenantsByModel();
 
   const engines = useMemo<EngineRow[]>(() => {
     const byEngine = (rows: InstantRow[]) => new Map(rows.map((r) => [engineKey(r.labels), r.value]));
@@ -97,11 +109,15 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
       const gpus = gpuCountBy.get(pod);
       const used = gpuUsedBy.get(pod);
       const total = gpuTotalBy.get(pod);
+      const model = r.labels.model_name || "—";
       return {
         key: engineKey(r.labels),
-        model: r.labels.model_name || "—",
+        model,
+        namespace: r.labels.namespace || "—",
         pod,
+        service: workloadFromPod(pod),
         node,
+        tenants: tenants.byModel.get(model) ?? [],
         accelerator,
         devices: neuron ? (node ? neuronCoresBy.get(node) ?? null : null) : gpus ?? null,
         accelUtil: neuron ? (node ? neuronUtilBy.get(node) ?? null : null) : gpuUtilBy.get(pod) ?? null,
@@ -118,13 +134,15 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
   }, [
     running.rows, waiting.rows, kv.rows, hits.rows, queries.rows, genTps.rows, ttftPod.rows, podNode.rows,
     gpuUtil.rows, gpuCount.rows, gpuMemUsed.rows, gpuMemTotal.rows, neuronUtil.rows, neuronCores.rows,
-    accelerators.byNode,
+    accelerators.byNode, tenants.byModel,
   ]);
+
+  const visible = useMemo(() => engines.filter((e) => matchesFilter(e, filter)), [engines, filter]);
 
   const models = useMemo<ModelRow[]>(() => {
     const ttftBy = new Map(ttftModel.rows.map((r) => [r.labels.model_name, r.value]));
     const groups = new Map<string, EngineRow[]>();
-    for (const e of engines) groups.set(e.model, [...(groups.get(e.model) ?? []), e]);
+    for (const e of visible) groups.set(e.model, [...(groups.get(e.model) ?? []), e]);
     return [...groups.entries()]
       .map(([model, rows]) => {
         const utilWeighted = weightedMean(rows.map((r) => [r.accelUtil, r.devices]));
@@ -134,8 +152,11 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
         return {
           key: model,
           model,
+          namespace: [...new Set(rows.map((r) => r.namespace))].sort().join(", "),
           pods: rows.length,
           accelerators: [...new Set(rows.map((r) => r.accelerator).filter((a): a is string => !!a))].sort(),
+          services: [...new Set(rows.map((r) => r.service))].sort(),
+          tenants: rows[0]?.tenants ?? [],
           accelerator: null,
           devices: sumOrNull(rows.map((r) => r.devices)),
           accelUtil: utilWeighted,
@@ -150,11 +171,15 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
         };
       })
       .sort((a, b) => (b.genTps ?? -1) - (a.genTps ?? -1) || a.model.localeCompare(b.model));
-  }, [engines, ttftModel.rows]);
+  }, [visible, ttftModel.rows]);
 
-  // Colour follows the model, not the row position, so a pod keeps its pool's
-  // colour in both groupings and across refreshes.
-  const modelColor = new Map(models.map((m, i) => [m.model, colorForIndex(i)]));
+  // Colour follows the model, not the row position (and not the filter), so a
+  // pod keeps its pool's colour in both groupings, across refreshes and when
+  // the filter hides its siblings.
+  const modelColor = useMemo(() => {
+    const all = [...new Set(engines.map((e) => e.model))].sort();
+    return new Map(all.map((m, i) => [m, colorForIndex(i)]));
+  }, [engines]);
 
   const error = running.error ?? kv.error ?? gpuUtil.error;
   if (error) {
@@ -171,8 +196,15 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
       </p>
     );
   }
+  if (visible.length === 0) {
+    return (
+      <p className="py-8 text-center text-xs text-ink-muted">
+        No engines match the current filters{isFiltering(filter) ? " — clear a filter to widen the view." : "."}
+      </p>
+    );
+  }
 
-  const podRows = [...engines].sort(
+  const podRows = [...visible].sort(
     (a, b) => (b.genTps ?? -1) - (a.genTps ?? -1) || a.model.localeCompare(b.model) || a.pod.localeCompare(b.pod),
   );
   const th = "py-2 pr-4 font-medium";
@@ -187,6 +219,7 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
             <th className={th}>Model pool</th>
             {grouping === "pod" ? (
               <>
+                <th className={th}>Namespace</th>
                 <th className={th}>Pod</th>
                 <th className={th}>Node</th>
               </>
@@ -212,7 +245,10 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
             <th className={thRight}>Running</th>
             <th className={thRight}>Waiting</th>
             <th className={thRight}>Gen tok/s</th>
-            <th className={`py-2 font-medium text-right`}>TTFT p95</th>
+            <th className={thRight}>TTFT p95</th>
+            <th className="py-2 font-medium" title="LiteLLM teams with a virtual key routed to this model pool">
+              Tenants
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -240,8 +276,11 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
                     <StatusValue value={m.waiting} text={formatCount(roundOrNull(m.waiting))} level={levelFor(m.waiting, T.queueDepth)} />
                   </td>
                   <td className={td}>{formatShort(m.genTps, 1)}</td>
-                  <td className="tabular py-2 text-right text-ink">
+                  <td className={td}>
                     <StatusValue value={m.ttftP95} text={formatSeconds(m.ttftP95)} level={levelFor(m.ttftP95, T.ttftP95)} />
+                  </td>
+                  <td className="py-2 text-ink-muted">
+                    <Tenants tenants={m.tenants} />
                   </td>
                 </tr>
               ))
@@ -250,6 +289,7 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
                   <td className="py-2 pr-4 text-ink">
                     <ModelName name={e.model} color={modelColor.get(e.model)!} />
                   </td>
+                  <td className="py-2 pr-4 text-ink-secondary">{e.namespace}</td>
                   <td className="max-w-[16rem] truncate py-2 pr-4 font-mono text-[11px] text-ink-secondary" title={e.pod}>
                     {e.pod || "—"}
                   </td>
@@ -277,8 +317,11 @@ export function EnginesTable({ grouping }: { grouping: EnginesGrouping }) {
                     <StatusValue value={e.waiting} text={formatCount(roundOrNull(e.waiting))} level={levelFor(e.waiting, T.queueDepth)} />
                   </td>
                   <td className={td}>{formatShort(e.genTps, 1)}</td>
-                  <td className="tabular py-2 text-right text-ink">
+                  <td className={td}>
                     <StatusValue value={e.ttftP95} text={formatSeconds(e.ttftP95)} level={levelFor(e.ttftP95, T.ttftP95)} />
+                  </td>
+                  <td className="py-2 text-ink-muted">
+                    <Tenants tenants={e.tenants} />
                   </td>
                 </tr>
               ))}
@@ -321,6 +364,11 @@ export function EnginesGroupingToggle({
       })}
     </div>
   );
+}
+
+function Tenants({ tenants }: { tenants: string[] }) {
+  if (tenants.length === 0) return <span title="No LiteLLM virtual key routes to this pool">—</span>;
+  return <>{tenants.join(", ")}</>;
 }
 
 function ModelName({ name, color }: { name: string; color: string }) {

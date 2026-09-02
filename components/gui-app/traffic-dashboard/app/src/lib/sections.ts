@@ -16,9 +16,9 @@ export const SECTIONS: readonly SectionDef[] = [
   {
     id: "at-a-glance",
     label: "At a Glance",
-    title: "At a Glance — Token Factory signals",
+    title: "At a Glance — cluster overview",
     description:
-      "The KCD 2026 Token Factory signal set on one screen: routing & prefix cache, per-token throughput & latency, GPU & KV cache, and the LLM-native scale signals — then the same signals per model pool and per engine pod, plus the platform network headlines. Sparklines follow the selected time window.",
+      "Whole-cluster averages on one screen: nodes & pods, CPU, memory, network, storage, GPU & accelerators, and the serving headline. Sparklines follow the selected time window; the per-model and per-pod detail lives under GPU & Accelerators.",
   },
   {
     id: "network",
