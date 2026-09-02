@@ -426,3 +426,32 @@ export const CLUSTER_THRESHOLDS = {
   oomKilled: { warning: 1, critical: 5 },
   fsUsed: { warning: 0.75, critical: 0.9 },
 } as const;
+
+// --- Agent / collector health (header strip) ---------------------------------
+//
+// One instant query per aspect, each covering DaemonSets, Deployments and
+// StatefulSets at once: kube-state-metrics names the workload with a different
+// label per kind, so label_replace normalises it to `workload` and stamps a
+// `kind` label before the three vectors are `or`-ed together.
+function workloadState(metric: string, kind: string, nameLabel: string, ns: string): string {
+  return `label_replace(label_replace(${metric}{namespace=~"${ns}"}, "workload", "$1", "${nameLabel}", "(.+)"), "kind", "${kind}", "", "")`;
+}
+
+/** `ns` is a namespace regex (alternation) limiting the payload to the agents' namespaces. */
+export function buildAgentQueries(ns: string) {
+  return {
+    desired: [
+      workloadState("kube_daemonset_status_desired_number_scheduled", "daemonset", "daemonset", ns),
+      workloadState("kube_deployment_spec_replicas", "deployment", "deployment", ns),
+      workloadState("kube_statefulset_replicas", "statefulset", "statefulset", ns),
+    ].join(" or "),
+    ready: [
+      workloadState("kube_daemonset_status_number_ready", "daemonset", "daemonset", ns),
+      workloadState("kube_deployment_status_replicas_available", "deployment", "deployment", ns),
+      workloadState("kube_statefulset_status_replicas_ready", "statefulset", "statefulset", ns),
+    ].join(" or "),
+    /** Scrape health per Prometheus job: m="up" is the count of healthy targets, m="targets" the total. */
+    scrape: `label_replace(sum by (job) (up), "m", "up", "", "") or label_replace(count by (job) (up), "m", "targets", "", "")`,
+    restarts1h: `sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~"${ns}"}[1h])) > 0`,
+  } as const;
+}

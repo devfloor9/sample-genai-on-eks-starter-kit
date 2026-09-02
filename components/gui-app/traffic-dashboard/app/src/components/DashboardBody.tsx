@@ -10,7 +10,7 @@ import { ServiceMapSection } from "./sections/ServiceMapSection";
 import { AcceleratorSection } from "./sections/AcceleratorSection";
 import { DeepLinks } from "./sections/DeepLinks";
 import { SectionTabs } from "./SectionTabs";
-import { REFRESH_MS } from "@/lib/useSeries";
+import { AgentHealthStrip } from "./AgentHealthStrip";
 import { DEFAULT_SECTION_ID, getSection, isSectionId } from "@/lib/sections";
 
 const WINDOWS = [
@@ -63,11 +63,10 @@ export function DashboardBody({ domain }: { domain: string }) {
 
   return (
     <div className="mx-auto max-w-[1600px] px-6 pb-10 pt-8">
+      {/* Header: the health of the telemetry pipeline itself. If a collector is
+          down, every panel below it is suspect, so that is the first thing shown. */}
       <div className="mb-4">
-        <h1 className="text-xl font-semibold tracking-tight text-ink">Traffic &amp; performance</h1>
-        <p className="mt-1 text-xs text-ink-muted">
-          Live from Prometheus, refreshed every {REFRESH_MS / 1000}s. Rates use a 5m window.
-        </p>
+        <AgentHealthStrip />
       </div>
 
       {/* Tab strip + time window share one sticky row directly under the top nav

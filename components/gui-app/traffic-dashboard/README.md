@@ -51,6 +51,23 @@ Back/Forward move between tabs. Only the active panel is mounted: inactive
 panels stop polling Prometheus, and SWR's cache repaints the previous data
 immediately when you switch back. Arrow keys, Home and End move between tabs.
 
+## Agents & collectors (header)
+
+Above the tabs sits a health strip for the telemetry pipeline itself: one chip
+per agent or collector the dashboard depends on, grouped as node agents
+(node-exporter, Beyla eBPF, Network Flow Monitor agent, DCGM exporter,
+neuron-monitor, the GPU operator DaemonSets, EFS CSI), metrics (Prometheus,
+Prometheus Operator, kube-state-metrics, Grafana, Pushgateway, NFM exporter,
+metrics-server), traces (the Tempo components) and LLM tracing (Langfuse). Each
+chip shows ready/desired from kube-state-metrics; scrape health (`up` for the
+component's Prometheus job) and container restarts in the last hour can only
+lower the state, never raise it. Hover or focus a chip for the detail. The list
+is curated in `src/lib/agents.ts` — it is not a discovery, so a component that
+is not installed in a cluster shows as "Not installed" rather than an error;
+add or rename entries there to match your install (the workload names follow
+the Helm release names this starter kit uses). Pod-to-workload attribution for
+the restart count uses the pod-name heuristic in `src/lib/workload.ts`.
+
 ## At a Glance
 
 The first tab is a whole-cluster overview: seven blocks of four tiles each,
