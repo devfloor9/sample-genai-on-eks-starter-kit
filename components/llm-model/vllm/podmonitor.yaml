@@ -20,6 +20,14 @@ spec:
     matchExpressions:
       - key: app
         operator: Exists
+      # Pods in this namespace that carry app= but are not vLLM engines: the
+      # Open-Sora video server has no /metrics (404 kept the job at 15/16 up)
+      # and neuron-lb is the Envoy in front of the Neuron pools.
+      - key: app
+        operator: NotIn
+        values:
+          - opensora-v2
+          - neuron-lb
   podMetricsEndpoints:
     - port: http
       path: /metrics

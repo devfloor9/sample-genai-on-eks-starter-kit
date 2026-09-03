@@ -5,6 +5,11 @@ metadata:
   namespace: vllm
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate: a surge replica of a multi-GPU pool needs a
+  # second multi-GPU node that Karpenter may not (and should not) provision;
+  # with RollingUpdate the new pod sits Pending while the old one keeps the GPUs.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: glm-52-fp8
@@ -64,6 +69,14 @@ spec:
             - --tensor-parallel-size=8
             - --kv-cache-dtype=fp8
             - --gpu-memory-utilization=0.90
+            # Automatic Prefix Caching (APC) on explicitly: the cache-hit ratio is
+            # an SLI on the Token Factory dashboard, so it must not depend on
+            # vLLM's per-architecture default.
+            - --enable-prefix-caching
+            # Return usage.prompt_tokens_details.cached_tokens in every response so
+            # the gateway (LiteLLM litellm_input_cached_tokens_metric) can attribute
+            # cache hits to a tenant / prompt template. Off by default in vLLM.
+            - --enable-prompt-tokens-details
             - --max-model-len=131072 # 128K
             # GLM-5.2 specific parsers (per official vLLM recipe)
             - --enable-auto-tool-choice
