@@ -9,6 +9,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GIT_SHA=$(git -C "$SCRIPT_DIR" rev-parse --short=8 HEAD)
 
 # Example images to build
 # Format: build_context:image_name[:dockerfile_dir]
@@ -16,7 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # while build_context provides the files (useful for shared source code).
 EXAMPLES=(
     "mcp-server/calculator:mcp-server-calculator"
+    "mcp-server/image-processor:mcp-server-image-processor"
     "strands-agents/calculator-agent:strands-agents-calculator-agent"
+    "strands-agents/loan-buddy-agent:strands-agents-loan-buddy-agent"
     "agno/calculator-agent:agno-calculator-agent"
     "openclaw/shared:openclaw-bridge-server"
     "openclaw/shared:openclaw-devops-agent:openclaw/devops-agent"
@@ -82,12 +85,15 @@ build_and_push_image() {
 
     # Build and push multi-arch image
     local ecr_image="public.ecr.aws/$ECR_REGISTRY_ALIAS/$image_name:latest"
+    local ecr_image_sha="public.ecr.aws/$ECR_REGISTRY_ALIAS/$image_name:sha-$GIT_SHA"
     echo "  Building and pushing multi-arch image to: $ecr_image"
+    echo "  SHA tag: $ecr_image_sha"
 
     docker buildx build \
         --platform linux/amd64,linux/arm64 \
         -f "$dockerfile_path" \
         --tag $ecr_image \
+        --tag $ecr_image_sha \
         --push \
         $build_context
 
@@ -111,5 +117,6 @@ echo "Images available at:"
 for example in "${EXAMPLES[@]}"; do
     image_name=$(echo $example | cut -d':' -f2)
     echo "  - public.ecr.aws/$ECR_REGISTRY_ALIAS/$image_name:latest"
+    echo "  - public.ecr.aws/$ECR_REGISTRY_ALIAS/$image_name:sha-$GIT_SHA"
 done
 echo "=========================================="
