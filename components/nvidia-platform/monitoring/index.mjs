@@ -100,7 +100,7 @@ export async function install() {
   const grafanaPassword = monitoringConfig.grafanaAdminPassword || "admin";
   const retention = monitoringConfig.retention || "7d";
   const enablePersistentStorage = monitoringConfig.enablePersistentStorage ?? false;
-  const storageSize = monitoringConfig.prometheusStorageSize || "50Gi";
+  const storageSize = monitoringConfig.prometheusStorageSize || "500Gi";
   const alertmanagerEnabled = monitoringConfig.alertmanagerEnabled ?? false;
   
   // Auto-detect Ingress controller
@@ -117,11 +117,23 @@ export async function install() {
     console.log("⚠️  No Ingress controller found. Use port-forward to access Grafana/Prometheus.");
   }
   
-  // Determine storage class
-  const storageClass = isK8s 
-    ? (config?.platform?.k8s?.storageClass || "local-path")
-    : (config?.platform?.eks?.storageClass || "efs");
+  // Determine storage class. Prometheus' TSDB needs a block device: it does
+  // not support NFS-backed filesystems (EFS), so the platform-wide default is
+  // only a fallback and platform.monitoring.prometheusStorageClass should name
+  // an EBS class (gp3 "ebs" on EKS Auto Mode).
+  const storageClass = monitoringConfig.prometheusStorageClass
+    || (isK8s
+      ? (config?.platform?.k8s?.storageClass || "local-path")
+      : "ebs");
   
+  // ~95% of the PVC, in Prometheus' unit syntax (GB/GiB), e.g. 500Gi -> 475GiB.
+  const retentionSizeFor = (size) => {
+    const m = /^(\d+)(Gi|G|Ti|T)$/.exec(size);
+    if (!m) return "0";
+    const n = Number(m[1]) * (m[2].startsWith("T") ? 1024 : 1);
+    return `${Math.floor(n * 0.95)}GiB`;
+  };
+
   // Step 1: Add Helm repo
   console.log("\n[1/4] Adding prometheus-community Helm repo...");
   await $`helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update`;
@@ -141,6 +153,7 @@ export async function install() {
     ENABLE_PERSISTENT_STORAGE: enablePersistentStorage,
     STORAGE_CLASS: storageClass,
     PROMETHEUS_STORAGE_SIZE: storageSize,
+    PROMETHEUS_RETENTION_SIZE: retentionSizeFor(storageSize),
     GRAFANA_ADMIN_PASSWORD: grafanaPassword,
     ALERTMANAGER_ENABLED: alertmanagerEnabled,
     ENABLE_INGRESS: enableIngress,
@@ -181,6 +194,9 @@ export async function install() {
       --namespace ${MONITORING_NAMESPACE} \
       --set serviceMonitor.enabled=true \
       --set serviceMonitor.additionalLabels.release=prometheus \
+      --set resources.requests.cpu=20m \
+      --set resources.requests.memory=64Mi \
+      --set resources.limits.memory=128Mi \
       --wait --timeout 3m`.quiet();
     console.log("  ✅ Pushgateway installed");
   } catch (e) {
@@ -231,9 +247,11 @@ async function applyGrafanaDashboards() {
   const dashboards = [
     { file: "dynamo-dashboard.json", name: "grafana-dynamo-dashboard", label: "Dynamo Dashboard" },
     { file: "dcgm-metrics.json", name: "grafana-dcgm-dashboard", label: "DCGM GPU Monitoring" },
+    { file: "neuron-monitor.json", name: "grafana-neuron-dashboard", label: "AWS Neuron (Inferentia / Trainium) Monitoring" },
     { file: "kvbm.json", name: "grafana-kvbm-dashboard", label: "KVBM KV Cache" },
     { file: "benchmark-dashboard.json", name: "grafana-benchmark-dashboard", label: "Benchmark Pareto" },
     { file: "agentic-traffic-overview.json", name: "grafana-agentic-traffic-dashboard", label: "Agentic Traffic Overview (eBPF + Langfuse)" },
+    { file: "token-factory-overview.json", name: "grafana-token-factory-dashboard", label: "Token Factory Overview (LLM-native Signals)" },
   ];
   
   for (const dashboard of dashboards) {
